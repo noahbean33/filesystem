@@ -1,13 +1,3 @@
-/**
- * Less Simple, Yet Stupid Filesystem.
- * 
- * Mohammed Q. Hussain - http://www.maastaar.net
- *
- * This is an example of using FUSE to build a simple filesystem. It is a part of a tutorial in MQH Blog with the title "Writing Less Simple, Yet Stupid Filesystem Using FUSE in C": http://maastaar.net/fuse/linux/filesystem/c/2019/09/28/writing-less-simple-yet-stupid-filesystem-using-FUSE-in-C/
- *
- * License: GNU GPL
- */
- 
 #define FUSE_USE_VERSION 30
 
 #include <fuse.h>
@@ -18,8 +8,6 @@
 #include <string.h>
 #include <stdlib.h>
 #include <errno.h>
-
-// ... //
 
 char dir_list[ 256 ][ 256 ];
 int curr_dir_idx = -1;
@@ -32,8 +20,12 @@ int curr_file_content_idx = -1;
 
 void add_dir( const char *dir_name )
 {
+	if ( curr_dir_idx >= 255 )
+		return;
+	
 	curr_dir_idx++;
-	strcpy( dir_list[ curr_dir_idx ], dir_name );
+	strncpy( dir_list[ curr_dir_idx ], dir_name, 255 );
+	dir_list[ curr_dir_idx ][ 255 ] = '\0';
 }
 
 int is_dir( const char *path )
@@ -49,11 +41,15 @@ int is_dir( const char *path )
 
 void add_file( const char *filename )
 {
+	if ( curr_file_idx >= 255 )
+		return;
+	
 	curr_file_idx++;
-	strcpy( files_list[ curr_file_idx ], filename );
+	strncpy( files_list[ curr_file_idx ], filename, 255 );
+	files_list[ curr_file_idx ][ 255 ] = '\0';
 	
 	curr_file_content_idx++;
-	strcpy( files_content[ curr_file_content_idx ], "" );
+	files_content[ curr_file_content_idx ][ 0 ] = '\0';
 }
 
 int is_file( const char *path )
@@ -85,7 +81,8 @@ void write_to_file( const char *path, const char *new_content )
 	if ( file_idx == -1 ) // No such file
 		return;
 		
-	strcpy( files_content[ file_idx ], new_content ); 
+	strncpy( files_content[ file_idx ], new_content, 255 ); 
+	files_content[ file_idx ][ 255 ] = '\0';
 }
 
 // ... //
@@ -106,7 +103,11 @@ static int do_getattr( const char *path, struct stat *st )
 	{
 		st->st_mode = S_IFREG | 0644;
 		st->st_nlink = 1;
-		st->st_size = 1024;
+		int file_idx = get_file_index( path );
+		if ( file_idx != -1 )
+			st->st_size = strlen( files_content[ file_idx ] );
+		else
+			st->st_size = 0;
 	}
 	else
 	{
@@ -138,13 +139,21 @@ static int do_read( const char *path, char *buffer, size_t size, off_t offset, s
 	int file_idx = get_file_index( path );
 	
 	if ( file_idx == -1 )
-		return -1;
+		return -ENOENT;
 	
 	char *content = files_content[ file_idx ];
+	int len = strlen( content );
 	
-	memcpy( buffer, content + offset, size );
+	if ( offset >= len )
+		return 0;
+	
+	int bytes_to_read = len - offset;
+	if ( bytes_to_read > size )
+		bytes_to_read = size;
+	
+	memcpy( buffer, content + offset, bytes_to_read );
 		
-	return strlen( content ) - offset;
+	return bytes_to_read;
 }
 
 static int do_mkdir( const char *path, mode_t mode )
@@ -165,9 +174,30 @@ static int do_mknod( const char *path, mode_t mode, dev_t rdev )
 
 static int do_write( const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *info )
 {
-	write_to_file( path, buffer );
+	int file_idx = get_file_index( path );
 	
-	return size;
+	if ( file_idx == -1 )
+		return -ENOENT;
+	
+	int current_len = strlen( files_content[ file_idx ] );
+	int new_len = offset + size;
+	
+	if ( new_len > 255 )
+		new_len = 255;
+	
+	if ( offset > current_len )
+	{
+		memset( files_content[ file_idx ] + current_len, 0, offset - current_len );
+	}
+	
+	int bytes_to_write = new_len - offset;
+	if ( bytes_to_write > 0 )
+	{
+		memcpy( files_content[ file_idx ] + offset, buffer, bytes_to_write );
+		files_content[ file_idx ][ new_len ] = '\0';
+	}
+	
+	return bytes_to_write > 0 ? bytes_to_write : 0;
 }
 
 static struct fuse_operations operations = {
